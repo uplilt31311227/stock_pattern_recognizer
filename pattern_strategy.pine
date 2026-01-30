@@ -1,0 +1,377 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © K線形態辨識系統 v2.0 - TradingView 回測版
+
+//@version=5
+strategy("K線形態辨識策略 v2.0", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10, commission_type=strategy.commission.percent, commission_value=0.1)
+
+// ============================================================
+// 參數設定
+// ============================================================
+grp_zigzag = "ZigZag 設定"
+zigzag_pct = input.float(3.0, "ZigZag 閾值 (%)", minval=1.0, maxval=10.0, step=0.5, group=grp_zigzag)
+zigzag_depth = input.int(12, "ZigZag 深度", minval=5, maxval=50, group=grp_zigzag)
+
+grp_pattern = "形態設定"
+tolerance = input.float(3.0, "價格容差 (%)", minval=1.0, maxval=10.0, step=0.5, group=grp_pattern)
+min_height_pct = input.float(8.0, "最小形態高度 (%)", minval=3.0, maxval=20.0, step=1.0, group=grp_pattern)
+symmetry_tol = input.float(10.0, "對稱性容差 (%)", minval=5.0, maxval=30.0, step=1.0, group=grp_pattern)
+
+grp_signal = "訊號設定"
+trigger_pct = input.float(2.0, "觸發閾值 (%)", minval=0.5, maxval=5.0, step=0.5, group=grp_signal)
+use_volume_confirm = input.bool(true, "成交量確認", group=grp_signal)
+vol_mult = input.float(1.2, "成交量倍數", minval=1.0, maxval=3.0, step=0.1, group=grp_signal)
+
+grp_risk = "風險管理"
+stop_loss_pct = input.float(1.0, "停損加碼 (%)", minval=0.5, maxval=5.0, step=0.5, group=grp_risk)
+use_target1 = input.bool(true, "使用頸線目標", group=grp_risk)
+use_target2 = input.bool(false, "使用測量目標", group=grp_risk)
+
+grp_filter = "形態篩選"
+enable_double_bottom = input.bool(true, "W底 (做多)", group=grp_filter)
+enable_double_top = input.bool(true, "M頭 (做空)", group=grp_filter)
+enable_hs_bottom = input.bool(true, "頭肩底 (做多)", group=grp_filter)
+enable_hs_top = input.bool(true, "頭肩頂 (做空)", group=grp_filter)
+
+// ============================================================
+// ZigZag 計算
+// ============================================================
+var float[] zz_price = array.new_float(0)
+var int[] zz_index = array.new_int(0)
+var int[] zz_type = array.new_int(0)  // 1 = peak, -1 = valley
+
+// 簡化版 ZigZag
+pivotHigh = ta.pivothigh(high, zigzag_depth, zigzag_depth)
+pivotLow = ta.pivotlow(low, zigzag_depth, zigzag_depth)
+
+// 儲存轉折點
+if not na(pivotHigh)
+    if array.size(zz_type) == 0 or array.get(zz_type, array.size(zz_type) - 1) != 1
+        // 檢查是否符合 ZigZag 閾值
+        if array.size(zz_price) == 0 or math.abs(pivotHigh - array.get(zz_price, array.size(zz_price) - 1)) / array.get(zz_price, array.size(zz_price) - 1) * 100 >= zigzag_pct
+            array.push(zz_price, pivotHigh)
+            array.push(zz_index, bar_index - zigzag_depth)
+            array.push(zz_type, 1)
+            // 限制陣列大小
+            if array.size(zz_price) > 10
+                array.shift(zz_price)
+                array.shift(zz_index)
+                array.shift(zz_type)
+
+if not na(pivotLow)
+    if array.size(zz_type) == 0 or array.get(zz_type, array.size(zz_type) - 1) != -1
+        if array.size(zz_price) == 0 or math.abs(pivotLow - array.get(zz_price, array.size(zz_price) - 1)) / array.get(zz_price, array.size(zz_price) - 1) * 100 >= zigzag_pct
+            array.push(zz_price, pivotLow)
+            array.push(zz_index, bar_index - zigzag_depth)
+            array.push(zz_type, -1)
+            if array.size(zz_price) > 10
+                array.shift(zz_price)
+                array.shift(zz_index)
+                array.shift(zz_type)
+
+// ============================================================
+// 輔助函數
+// ============================================================
+getPivot(idx) =>
+    size = array.size(zz_price)
+    if idx >= 0 and idx < size
+        [array.get(zz_price, size - 1 - idx), array.get(zz_index, size - 1 - idx), array.get(zz_type, size - 1 - idx)]
+    else
+        [na, na, na]
+
+// 成交量確認
+vol_ma = ta.sma(volume, 20)
+volume_ok = not use_volume_confirm or volume > vol_ma * vol_mult
+
+// ============================================================
+// W底形態識別 (Double Bottom)
+// ============================================================
+detect_double_bottom() =>
+    if array.size(zz_price) < 4
+        [false, float(na), float(na), float(na)]
+    else
+        [p0_price, p0_idx, p0_type] = getPivot(0)
+        [p1_price, p1_idx, p1_type] = getPivot(1)
+        [p2_price, p2_idx, p2_type] = getPivot(2)
+        [p3_price, p3_idx, p3_type] = getPivot(3)
+
+        // p3=左底(valley), p2=中峰(peak), p1=右底(valley), p0=當前
+        is_valid = p3_type == -1 and p2_type == 1 and p1_type == -1
+
+        if is_valid
+            left_bottom = p3_price
+            right_bottom = p1_price
+            neckline = p2_price
+
+            // 檢查雙底對稱性
+            price_diff = math.abs(left_bottom - right_bottom) / left_bottom * 100
+            is_symmetric = price_diff <= tolerance
+
+            // 檢查形態高度
+            avg_bottom = (left_bottom + right_bottom) / 2
+            height_pct = (neckline - avg_bottom) / avg_bottom * 100
+            has_height = height_pct >= min_height_pct
+
+            // 觸發條件：價格突破右底
+            triggered = close > right_bottom * (1 + trigger_pct / 100)
+
+            if is_symmetric and has_height and triggered
+                stop = right_bottom * (1 - stop_loss_pct / 100)
+                target1 = neckline
+                target2 = neckline + (neckline - avg_bottom)
+                [true, stop, target1, target2]
+            else
+                [false, float(na), float(na), float(na)]
+        else
+            [false, float(na), float(na), float(na)]
+
+// ============================================================
+// M頭形態識別 (Double Top)
+// ============================================================
+detect_double_top() =>
+    if array.size(zz_price) < 4
+        [false, float(na), float(na), float(na)]
+    else
+        [p0_price, p0_idx, p0_type] = getPivot(0)
+        [p1_price, p1_idx, p1_type] = getPivot(1)
+        [p2_price, p2_idx, p2_type] = getPivot(2)
+        [p3_price, p3_idx, p3_type] = getPivot(3)
+
+        // p3=左頂(peak), p2=中谷(valley), p1=右頂(peak), p0=當前
+        is_valid = p3_type == 1 and p2_type == -1 and p1_type == 1
+
+        if is_valid
+            left_top = p3_price
+            right_top = p1_price
+            neckline = p2_price
+
+            price_diff = math.abs(left_top - right_top) / left_top * 100
+            is_symmetric = price_diff <= tolerance
+
+            avg_top = (left_top + right_top) / 2
+            height_pct = (avg_top - neckline) / avg_top * 100
+            has_height = height_pct >= min_height_pct
+
+            triggered = close < right_top * (1 - trigger_pct / 100)
+
+            if is_symmetric and has_height and triggered
+                stop = right_top * (1 + stop_loss_pct / 100)
+                target1 = neckline
+                target2 = neckline - (avg_top - neckline)
+                [true, stop, target1, target2]
+            else
+                [false, float(na), float(na), float(na)]
+        else
+            [false, float(na), float(na), float(na)]
+
+// ============================================================
+// 頭肩底形態識別 (Head & Shoulders Bottom)
+// ============================================================
+detect_hs_bottom() =>
+    if array.size(zz_price) < 5
+        [false, float(na), float(na), float(na)]
+    else
+        [p0_price, p0_idx, p0_type] = getPivot(0)
+        [p1_price, p1_idx, p1_type] = getPivot(1)
+        [p2_price, p2_idx, p2_type] = getPivot(2)
+        [p3_price, p3_idx, p3_type] = getPivot(3)
+        [p4_price, p4_idx, p4_type] = getPivot(4)
+
+        // p4=左肩(valley), p3=左頸(peak), p2=頭(valley), p1=右頸(peak), p0=右肩(valley)
+        is_valid = p4_type == -1 and p3_type == 1 and p2_type == -1 and p1_type == 1 and p0_type == -1
+
+        if is_valid
+            left_shoulder = p4_price
+            head = p2_price
+            right_shoulder = p0_price
+            neckline_left = p3_price
+            neckline_right = p1_price
+
+            // 頭必須低於雙肩
+            head_lower = head < left_shoulder and head < right_shoulder
+
+            // 雙肩對稱性
+            shoulder_diff = math.abs(left_shoulder - right_shoulder) / head * 100
+            is_symmetric = shoulder_diff <= symmetry_tol
+
+            neckline = (neckline_left + neckline_right) / 2
+
+            // 觸發條件
+            triggered = close > right_shoulder * (1 + trigger_pct / 100)
+
+            if head_lower and is_symmetric and triggered
+                stop = head * (1 - stop_loss_pct / 100)
+                depth = neckline - head
+                target1 = neckline
+                target2 = neckline + depth
+                [true, stop, target1, target2]
+            else
+                [false, float(na), float(na), float(na)]
+        else
+            [false, float(na), float(na), float(na)]
+
+// ============================================================
+// 頭肩頂形態識別 (Head & Shoulders Top)
+// ============================================================
+detect_hs_top() =>
+    if array.size(zz_price) < 5
+        [false, float(na), float(na), float(na)]
+    else
+        [p0_price, p0_idx, p0_type] = getPivot(0)
+        [p1_price, p1_idx, p1_type] = getPivot(1)
+        [p2_price, p2_idx, p2_type] = getPivot(2)
+        [p3_price, p3_idx, p3_type] = getPivot(3)
+        [p4_price, p4_idx, p4_type] = getPivot(4)
+
+        // p4=左肩(peak), p3=左頸(valley), p2=頭(peak), p1=右頸(valley), p0=右肩(peak)
+        is_valid = p4_type == 1 and p3_type == -1 and p2_type == 1 and p1_type == -1 and p0_type == 1
+
+        if is_valid
+            left_shoulder = p4_price
+            head = p2_price
+            right_shoulder = p0_price
+            neckline_left = p3_price
+            neckline_right = p1_price
+
+            // 頭必須高於雙肩
+            head_higher = head > left_shoulder and head > right_shoulder
+
+            // 雙肩對稱性
+            shoulder_diff = math.abs(left_shoulder - right_shoulder) / head * 100
+            is_symmetric = shoulder_diff <= symmetry_tol
+
+            neckline = (neckline_left + neckline_right) / 2
+
+            // 觸發條件
+            triggered = close < right_shoulder * (1 - trigger_pct / 100)
+
+            if head_higher and is_symmetric and triggered
+                stop = head * (1 + stop_loss_pct / 100)
+                depth = head - neckline
+                target1 = neckline
+                target2 = neckline - depth
+                [true, stop, target1, target2]
+            else
+                [false, float(na), float(na), float(na)]
+        else
+            [false, float(na), float(na), float(na)]
+
+// ============================================================
+// 執行形態識別
+// ============================================================
+[db_signal, db_stop, db_t1, db_t2] = detect_double_bottom()
+[dt_signal, dt_stop, dt_t1, dt_t2] = detect_double_top()
+[hsb_signal, hsb_stop, hsb_t1, hsb_t2] = detect_hs_bottom()
+[hst_signal, hst_stop, hst_t1, hst_t2] = detect_hs_top()
+
+// ============================================================
+// 交易邏輯
+// ============================================================
+var float entry_price = na
+var float stop_price = na
+var float target1_price = na
+var float target2_price = na
+var string current_pattern = ""
+
+// 做多訊號
+long_signal = (enable_double_bottom and db_signal) or (enable_hs_bottom and hsb_signal)
+// 做空訊號
+short_signal = (enable_double_top and dt_signal) or (enable_hs_top and hst_signal)
+
+// 進場邏輯
+if long_signal and strategy.position_size == 0 and volume_ok
+    if enable_double_bottom and db_signal
+        entry_price := close
+        stop_price := db_stop
+        target1_price := db_t1
+        target2_price := db_t2
+        current_pattern := "W底"
+        strategy.entry("W底做多", strategy.long)
+    else if enable_hs_bottom and hsb_signal
+        entry_price := close
+        stop_price := hsb_stop
+        target1_price := hsb_t1
+        target2_price := hsb_t2
+        current_pattern := "頭肩底"
+        strategy.entry("頭肩底做多", strategy.long)
+
+if short_signal and strategy.position_size == 0 and volume_ok
+    if enable_double_top and dt_signal
+        entry_price := close
+        stop_price := dt_stop
+        target1_price := dt_t1
+        target2_price := dt_t2
+        current_pattern := "M頭"
+        strategy.entry("M頭做空", strategy.short)
+    else if enable_hs_top and hst_signal
+        entry_price := close
+        stop_price := hst_stop
+        target1_price := hst_t1
+        target2_price := hst_t2
+        current_pattern := "頭肩頂"
+        strategy.entry("頭肩頂做空", strategy.short)
+
+// 出場邏輯
+if strategy.position_size > 0
+    // 做多出場
+    strategy.exit("多單出場", from_entry="W底做多", stop=stop_price, limit=use_target1 ? target1_price : (use_target2 ? target2_price : na))
+    strategy.exit("多單出場", from_entry="頭肩底做多", stop=stop_price, limit=use_target1 ? target1_price : (use_target2 ? target2_price : na))
+
+if strategy.position_size < 0
+    // 做空出場
+    strategy.exit("空單出場", from_entry="M頭做空", stop=stop_price, limit=use_target1 ? target1_price : (use_target2 ? target2_price : na))
+    strategy.exit("空單出場", from_entry="頭肩頂做空", stop=stop_price, limit=use_target1 ? target1_price : (use_target2 ? target2_price : na))
+
+// ============================================================
+// 視覺化
+// ============================================================
+// 繪製 ZigZag
+var line zz_line = na
+if array.size(zz_price) >= 2
+    idx1 = array.get(zz_index, array.size(zz_index) - 1)
+    idx2 = array.get(zz_index, array.size(zz_index) - 2)
+    p1 = array.get(zz_price, array.size(zz_price) - 1)
+    p2 = array.get(zz_price, array.size(zz_price) - 2)
+    zz_line := line.new(idx2, p2, idx1, p1, color=color.purple, width=1)
+    line.delete(zz_line[1])
+
+// 標記進場點
+plotshape(long_signal and strategy.position_size[1] == 0 and volume_ok, title="做多訊號", location=location.belowbar, style=shape.triangleup, size=size.normal, color=color.green, text="買")
+plotshape(short_signal and strategy.position_size[1] == 0 and volume_ok, title="做空訊號", location=location.abovebar, style=shape.triangledown, size=size.normal, color=color.red, text="賣")
+
+// 繪製停損與目標線 (僅在有持倉時)
+plot(strategy.position_size != 0 ? stop_price : na, "停損", color=color.red, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 and use_target1 ? target1_price : na, "目標1", color=color.green, style=plot.style_linebr, linewidth=1)
+plot(strategy.position_size != 0 and use_target2 ? target2_price : na, "目標2", color=color.teal, style=plot.style_linebr, linewidth=1)
+
+// ============================================================
+// 資訊面板
+// ============================================================
+var table info_panel = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    table.cell(info_panel, 0, 0, "形態策略 v2.0", text_color=color.white, text_size=size.normal)
+    table.cell(info_panel, 1, 0, "", text_color=color.white)
+
+    table.cell(info_panel, 0, 1, "當前形態", text_color=color.gray)
+    table.cell(info_panel, 1, 1, strategy.position_size != 0 ? current_pattern : "無", text_color=color.yellow)
+
+    table.cell(info_panel, 0, 2, "持倉方向", text_color=color.gray)
+    pos_text = strategy.position_size > 0 ? "做多" : (strategy.position_size < 0 ? "做空" : "空倉")
+    pos_color = strategy.position_size > 0 ? color.green : (strategy.position_size < 0 ? color.red : color.white)
+    table.cell(info_panel, 1, 2, pos_text, text_color=pos_color)
+
+    table.cell(info_panel, 0, 3, "進場價", text_color=color.gray)
+    table.cell(info_panel, 1, 3, strategy.position_size != 0 ? str.tostring(entry_price, format.mintick) : "-", text_color=color.white)
+
+    table.cell(info_panel, 0, 4, "停損價", text_color=color.gray)
+    table.cell(info_panel, 1, 4, strategy.position_size != 0 ? str.tostring(stop_price, format.mintick) : "-", text_color=color.red)
+
+    table.cell(info_panel, 0, 5, "目標價", text_color=color.gray)
+    target_show = use_target1 ? target1_price : (use_target2 ? target2_price : na)
+    table.cell(info_panel, 1, 5, strategy.position_size != 0 and not na(target_show) ? str.tostring(target_show, format.mintick) : "-", text_color=color.green)
+
+// ============================================================
+// 警報條件
+// ============================================================
+alertcondition(long_signal and volume_ok, title="做多訊號", message="{{ticker}} 出現看漲形態訊號")
+alertcondition(short_signal and volume_ok, title="做空訊號", message="{{ticker}} 出現看跌形態訊號")
