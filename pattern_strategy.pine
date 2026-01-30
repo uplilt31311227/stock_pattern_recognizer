@@ -43,30 +43,46 @@ var int[] zz_type = array.new_int(0)  // 1 = peak, -1 = valley
 pivotHigh = ta.pivothigh(high, zigzag_depth, zigzag_depth)
 pivotLow = ta.pivotlow(low, zigzag_depth, zigzag_depth)
 
+// 輔助函數：安全取得最後一個類型
+getLastType() =>
+    size = array.size(zz_type)
+    size > 0 ? array.get(zz_type, size - 1) : 0
+
+getLastPrice() =>
+    size = array.size(zz_price)
+    size > 0 ? array.get(zz_price, size - 1) : na
+
 // 儲存轉折點
 if not na(pivotHigh)
-    if array.size(zz_type) == 0 or array.get(zz_type, array.size(zz_type) - 1) != 1
-        // 檢查是否符合 ZigZag 閾值
-        if array.size(zz_price) == 0 or math.abs(pivotHigh - array.get(zz_price, array.size(zz_price) - 1)) / array.get(zz_price, array.size(zz_price) - 1) * 100 >= zigzag_pct
-            array.push(zz_price, pivotHigh)
-            array.push(zz_index, bar_index - zigzag_depth)
-            array.push(zz_type, 1)
-            // 限制陣列大小
-            if array.size(zz_price) > 10
-                array.shift(zz_price)
-                array.shift(zz_index)
-                array.shift(zz_type)
+    lastType = getLastType()
+    lastPrice = getLastPrice()
+    canAdd = lastType != 1  // 不是連續的 peak
+    meetsThreshold = na(lastPrice) or math.abs(pivotHigh - lastPrice) / lastPrice * 100 >= zigzag_pct
+
+    if canAdd and meetsThreshold
+        array.push(zz_price, pivotHigh)
+        array.push(zz_index, bar_index - zigzag_depth)
+        array.push(zz_type, 1)
+        // 限制陣列大小
+        if array.size(zz_price) > 10
+            array.shift(zz_price)
+            array.shift(zz_index)
+            array.shift(zz_type)
 
 if not na(pivotLow)
-    if array.size(zz_type) == 0 or array.get(zz_type, array.size(zz_type) - 1) != -1
-        if array.size(zz_price) == 0 or math.abs(pivotLow - array.get(zz_price, array.size(zz_price) - 1)) / array.get(zz_price, array.size(zz_price) - 1) * 100 >= zigzag_pct
-            array.push(zz_price, pivotLow)
-            array.push(zz_index, bar_index - zigzag_depth)
-            array.push(zz_type, -1)
-            if array.size(zz_price) > 10
-                array.shift(zz_price)
-                array.shift(zz_index)
-                array.shift(zz_type)
+    lastType = getLastType()
+    lastPrice = getLastPrice()
+    canAdd = lastType != -1  // 不是連續的 valley
+    meetsThreshold = na(lastPrice) or math.abs(pivotLow - lastPrice) / lastPrice * 100 >= zigzag_pct
+
+    if canAdd and meetsThreshold
+        array.push(zz_price, pivotLow)
+        array.push(zz_index, bar_index - zigzag_depth)
+        array.push(zz_type, -1)
+        if array.size(zz_price) > 10
+            array.shift(zz_price)
+            array.shift(zz_index)
+            array.shift(zz_type)
 
 // ============================================================
 // 輔助函數
@@ -76,7 +92,7 @@ getPivot(idx) =>
     if idx >= 0 and idx < size
         [array.get(zz_price, size - 1 - idx), array.get(zz_index, size - 1 - idx), array.get(zz_type, size - 1 - idx)]
     else
-        [na, na, na]
+        [float(na), int(na), 0]  // type=0 表示無效，不會匹配 1(peak) 或 -1(valley)
 
 // 成交量確認
 vol_ma = ta.sma(volume, 20)
