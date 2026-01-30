@@ -1,0 +1,27 @@
+[project]
+name = "stock-pattern-recognizer"
+version = "2.0.0"
+description = "智慧型 K 線形態辨識系統 - 本地部署版"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0.0",
+    "pandas>=2.0.0",
+    "scipy>=1.11.0",
+    "plotly>=5.18.0",
+    "yfinance>=0.2.36",
+    "requests>=2.31.0",
+    "tqdm>=4.66.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+finmind = ["finmind>=1.9.3"]
+
+[project.scripts]
+scanner = "main:main"
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]

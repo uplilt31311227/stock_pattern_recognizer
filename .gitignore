@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Cache directories
+cache/
+.cache/
+
+# Results (generated data)
+results/
+
+# Config with API keys
+config.json
+
+# Output images
+output*.png
+
+# Claude Code
+.claude/
